@@ -3,6 +3,7 @@
 #include "../Source/Dsp/OptoCompressor.h"
 #include "../Source/Dsp/MasterChain.h"
 #include "../Source/Dsp/PitchCorrector.h"
+#include "eq_tests.h"
 using namespace oc;
 
 static const float sr = 48000.f;
@@ -122,6 +123,8 @@ int main() {
         std::printf("[latency] master %d samples (%.2f ms), pitch ", m.latency(), 1000.f * m.latency() / sr);
         PitchCorrector pc; pc.prepare(sr); std::printf("%d samples (%.1f ms)\n", pc.latency(), 1000.f * pc.latency() / sr);
     }
+    std::printf("\n--- linear-phase EQ ---\n");
+    fails += eqt::runAll();
     std::printf(fails ? "\n%d test(s) FAILED\n" : "\nAll DSP tests passed\n", fails);
     return fails;
 }

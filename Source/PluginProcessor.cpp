@@ -43,6 +43,47 @@ APVTS::ParameterLayout OneChainProcessor::createLayout()
     addF("opto_link", "Opto Link", 0.f, 100.f, 100.f, 0, "%");
     addF("opto_mix", "Opto Mix", 0.f, 100.f, 100.f, 0, "%");
 
+
+    // ---------------- Linear-phase EQ (Pro-Q style, 8 bands) ----------------
+    addB("eq_on", "EQ On", true);
+    addF("eq_gain", "EQ Output", -12.f, 12.f, 0.f, 1, " dB");
+    addB("eq_analyzer", "EQ Analyzer", true);
+    {
+        static const float defFreq[oc::kEqBands] = { 60.f, 150.f, 400.f, 1000.f, 2500.f, 5000.f, 9000.f, 14000.f };
+        for (int b = 0; b < oc::kEqBands; ++b) {
+            const String n = String("eq") + String(b + 1) + "_";
+            const String nm = String("EQ ") + String(b + 1) + " ";
+            p.push_back(std::make_unique<AudioParameterBool>(ParameterID{ n + "on", 1 }, nm + "On", false));
+            p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ n + "shape", 1 }, nm + "Shape",
+                StringArray{ "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch", "Band Pass", "Tilt Shelf" }, 0));
+            {
+                NormalisableRange<float> r(20.f, 20000.f, 0.01f); r.setSkewForCentre(1000.f);
+                auto attr = AudioParameterFloatAttributes()
+                    .withStringFromValueFunction([](float v, int) { return v >= 1000.f ? String(v / 1000.f, 2) + " kHz" : String(v, 1) + " Hz"; })
+                    .withValueFromStringFunction([](const String& t) { const float v = t.getFloatValue(); return t.containsIgnoreCase("k") ? v * 1000.f : v; });
+                p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{ n + "freq", 1 }, nm + "Freq", r, defFreq[b], attr));
+            }
+            {
+                auto attr = AudioParameterFloatAttributes()
+                    .withStringFromValueFunction([](float v, int) { return String(v, 1) + " dB"; })
+                    .withValueFromStringFunction([](const String& t) { return t.getFloatValue(); });
+                p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{ n + "gain", 1 }, nm + "Gain",
+                            NormalisableRange<float>(-30.f, 30.f, 0.01f), 0.f, attr));
+            }
+            {
+                NormalisableRange<float> r(0.1f, 40.f, 0.01f); r.setSkewForCentre(1.f);
+                auto attr = AudioParameterFloatAttributes()
+                    .withStringFromValueFunction([](float v, int) { return String(v, 2); })
+                    .withValueFromStringFunction([](const String& t) { return t.getFloatValue(); });
+                p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{ n + "q", 1 }, nm + "Q", r, 1.f, attr));
+            }
+            p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ n + "slope", 1 }, nm + "Slope",
+                StringArray{ "6 dB/oct", "12 dB/oct", "18 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct", "72 dB/oct", "96 dB/oct" }, 1));
+            p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ n + "place", 1 }, nm + "Placement",
+                StringArray{ "Stereo", "Left", "Right", "Mid", "Side" }, 0));
+        }
+    }
+
     // ---------------- Master: main ----------------
     addB("mast_on", "Master On", true);
     addF("mast_low", "Low Shelf", -6.f, 6.f, 0.f, 1, " dB");
@@ -86,6 +127,18 @@ OneChainProcessor::OneChainProcessor()
           .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "STATE", createLayout())
 {
+    eqOnPtr = apvts.getRawParameterValue("eq_on");
+    eqGainPtr = apvts.getRawParameterValue("eq_gain");
+    for (int b = 0; b < oc::kEqBands; ++b) {
+        const juce::String n = juce::String("eq") + juce::String(b + 1) + "_";
+        eqPtr[b].on = apvts.getRawParameterValue(n + "on");
+        eqPtr[b].shape = apvts.getRawParameterValue(n + "shape");
+        eqPtr[b].freq = apvts.getRawParameterValue(n + "freq");
+        eqPtr[b].gain = apvts.getRawParameterValue(n + "gain");
+        eqPtr[b].q = apvts.getRawParameterValue(n + "q");
+        eqPtr[b].slope = apvts.getRawParameterValue(n + "slope");
+        eqPtr[b].place = apvts.getRawParameterValue(n + "place");
+    }
 }
 
 bool OneChainProcessor::isBusesLayoutSupported(const BusesLayout& l) const
@@ -99,10 +152,11 @@ void OneChainProcessor::prepareToPlay(double sr, int blockSize)
 {
     pitch.prepare((float)sr);
     opto.prepare((float)sr);
+    eq.prepare((float)sr);
     master.prepare((float)sr);
     dupR.assign((size_t)blockSize, 0.f);
-    // pitch window + limiter look-ahead: constant, whichever sections are switched on or off
-    setLatencySamples(pitch.latency() + master.latency());
+    // pitch window + linear-phase EQ + limiter look-ahead: constant, whichever sections are on or off
+    setLatencySamples(pitch.latency() + eq.latency() + master.latency());
 }
 
 void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -136,6 +190,29 @@ void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBu
     if (get("opto_on") > 0.5f)
         opto.process(l, r, n, get("opto_peak"), get("opto_gain"), get("opto_limit") > 0.5f,
                      get("opto_link") / 100.f, get("opto_mix") / 100.f);
+
+    // ---- Linear-phase EQ (always runs: constant latency; flat = pure delay) ----
+    {
+        oc::EqParams ep;
+        ep.on = eqOnPtr->load() > 0.5f;
+        ep.gainDb = eqGainPtr->load();
+        for (int b = 0; b < oc::kEqBands; ++b) {
+            oc::EqBand& bd = ep.band[b];
+            bd.on = eqPtr[b].on->load() > 0.5f;
+            bd.shape = (int)(eqPtr[b].shape->load() + 0.5f);
+            bd.freq = eqPtr[b].freq->load();
+            bd.gainDb = eqPtr[b].gain->load();
+            bd.q = eqPtr[b].q->load();
+            bd.slope = (int)(eqPtr[b].slope->load() + 0.5f);
+            bd.place = (int)(eqPtr[b].place->load() + 0.5f);
+        }
+        eq.process(l, r, n, ep);
+
+        // feed the analyzer with the post-EQ signal
+        int ap = anaPos.load();
+        for (int i = 0; i < n; ++i) anaBuf[(size_t)((ap + i) & (kAnaSize - 1))] = 0.5f * (l[i] + r[i]);
+        anaPos.store((ap + n) & (kAnaSize - 1));
+    }
 
     // ---- Master ----
     oc::MasterChain::Params mp;

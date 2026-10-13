@@ -1,21 +1,12 @@
 #include "PluginEditor.h"
 #include "Presets.h"
+#include "Skin.h"
+#include "EqPanel.h"
 #include <cmath>
 
+using namespace skin;
+
 namespace {
-
-// ---------------------------------------------------------------- palette
-const juce::Colour kLcdBg   (0xff06140d);
-const juce::Colour kLcdEdge (0xff1c5a3a);
-const juce::Colour kLcdText (0xff7dffa0);
-const juce::Colour kLcdDim  (0xff0f3a24);
-const juce::Colour kNeon    (0xff5dff8f);
-const juce::Colour kDark    (0xff03100a);
-const juce::Colour kWhite   (0xfff1fff6);
-const juce::Colour kRim     (0xff0a2e20);
-
-juce::Font monoFont(float h) { return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), h, juce::Font::bold)); }
-juce::Font sansFont(float h) { return juce::Font(juce::FontOptions(h, juce::Font::bold)); }
 
 // ---------------------------------------------------------------- pixel alien (left half, mirrored)
 const char* const kAlienHalf[21] = {
@@ -90,36 +81,6 @@ juce::Image makeSlimeTexture(int w, int h)
             bd.setPixelColour(x, y, juce::Colour::fromFloatRGBA(juce::jlimit(0.f, 1.f, r), juce::jlimit(0.f, 1.f, gg), juce::jlimit(0.f, 1.f, b), 1.f));
         }
     return img;
-}
-
-// ---------------------------------------------------------------- drawing helpers
-void drawPanel(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title)
-{
-    juce::Path p; p.addRoundedRectangle(r, 30.f);
-    g.setColour(juce::Colour(0x66000000)); g.fillPath(p);
-    g.setColour(kRim); g.strokePath(p, juce::PathStrokeType(4.f));
-    juce::Path q; q.addRoundedRectangle(r.reduced(3.f), 28.f);
-    g.setColour(juce::Colour(0x66c8ffe0)); g.strokePath(q, juce::PathStrokeType(1.2f));
-    if (title.isNotEmpty()) {
-        g.setFont(monoFont(15.f));
-        g.setColour(juce::Colours::black.withAlpha(0.6f));
-        g.drawText(title, r.withHeight(26.f).translated(1.f, 7.f), juce::Justification::centred, false);
-        g.setColour(kWhite);
-        g.drawText(title, r.withHeight(26.f).translated(0.f, 6.f), juce::Justification::centred, false);
-    }
-}
-void drawLcdBox(juce::Graphics& g, juce::Rectangle<float> r)
-{
-    g.setColour(kLcdBg); g.fillRoundedRectangle(r, 10.f);
-    g.setColour(kLcdEdge); g.drawRoundedRectangle(r.reduced(1.f), 10.f, 2.f);
-    g.setColour(juce::Colour(0x22ffffff)); g.drawRoundedRectangle(r.reduced(3.f), 8.f, 1.f);
-}
-void drawName(juce::Graphics& g, const juce::String& t, juce::Rectangle<int> r,
-              juce::Justification j = juce::Justification::centredLeft, float size = 17.f)
-{
-    g.setFont(sansFont(size));
-    g.setColour(juce::Colours::black.withAlpha(0.65f)); g.drawText(t, r.translated(1, 2), j, false);
-    g.setColour(kWhite);                                g.drawText(t, r, j, false);
 }
 
 // ---------------------------------------------------------------- look and feel
@@ -273,10 +234,29 @@ struct AlienButton : juce::Button {
     }
 };
 
+struct EqButton : juce::Button {
+    std::atomic<float>* eqOn = nullptr;
+    EqButton() : juce::Button("eq") { setClickingTogglesState(true); }
+    void paintButton(juce::Graphics& g, bool over, bool) override
+    {
+        auto r = getLocalBounds().toFloat();
+        drawLcdBox(g, r);
+        const bool lit = (eqOn != nullptr) && eqOn->load() > 0.5f;
+        if (getToggleState() || over) { g.setColour(kNeon.withAlpha(getToggleState() ? 0.9f : 0.45f)); g.drawRoundedRectangle(r.reduced(1.5f), 10.f, 2.f); }
+        juce::Path p; const float x0 = r.getX() + 12.f, w = 44.f, cy = r.getCentreY();
+        p.startNewSubPath(x0, cy + 6.f);
+        p.cubicTo(x0 + w * 0.25f, cy + 6.f, x0 + w * 0.35f, cy - 12.f, x0 + w * 0.5f, cy - 12.f);
+        p.cubicTo(x0 + w * 0.65f, cy - 12.f, x0 + w * 0.75f, cy + 6.f, x0 + w, cy + 6.f);
+        g.setColour(lit ? kNeon : kLcdDim.brighter(0.4f)); g.strokePath(p, juce::PathStrokeType(2.4f));
+        g.setFont(monoFont(22.f)); g.setColour(lit ? kLcdText : kLcdText.withAlpha(0.45f));
+        g.drawText("EQ", r.withTrimmedLeft(62.f), juce::Justification::centred, false);
+    }
+};
+
 // ---------------------------------------------------------------- the UI
 class OneChainUI : public juce::Component, private juce::Timer {
 public:
-    explicit OneChainUI(OneChainProcessor& p) : proc(p)
+    explicit OneChainUI(OneChainProcessor& p) : proc(p), eqPanel(p)
     {
         setLookAndFeel(&laf);
         setSize(626, 1024);
@@ -323,6 +303,11 @@ public:
         addAndMakeVisible(meter);
         addAndMakeVisible(alienBtn);
         alienBtn.onClick = [this] { setAdvanced(alienBtn.getToggleState()); };
+        addAndMakeVisible(eqButton);
+        eqButton.eqOn = proc.apvts.getRawParameterValue("eq_on");
+        eqButton.onClick = [this] { setEqOpen(eqButton.getToggleState()); };
+        addChildComponent(eqPanel);
+        eqPanel.onClose = [this] { eqButton.setToggleState(false, juce::dontSendNotification); setEqOpen(false); };
         setAdvanced(false);
         startTimerHz(30);
     }
@@ -368,6 +353,7 @@ public:
         drawLcdBox(g, { 228.f, 120.f, 170.f, 106.f });
         drawAlienFace(g, juce::Rectangle<float>(238.f, 126.f, 150.f, 94.f));
 
+        if (!eqOpen) {
         // --- pitch panel
         drawPanel(g, { 20.f, 238.f, 586.f, 142.f }, "PITCH");
         drawName(g, "Retune Speed", { 38, 272, 150, 40 });
@@ -389,6 +375,7 @@ public:
             for (int i = 0; i < 6; ++i) drawName(g, mn[i], { 38, 622 + i * 54, 150, 40 });
         } else {
             drawName(g, "Auto Gain", { 31 + 94 * 4 + 0, 606 + 86 * 3 + 14, 94, 20 }, juce::Justification::centred, 12.f);
+        }
         }
         // bottom strip
         drawName(g, "OUT", { 232, 958, 40, 28 }, juce::Justification::centredLeft, 14.f);
@@ -420,6 +407,8 @@ public:
         }
         autoGain.setBounds(31 + 94 * 4 + 29, 612 + 86 * 3 - 2, 36, 36);
 
+        eqButton.setBounds(486, 16, 114, 40);
+        eqPanel.setBounds(20, 236, 586, 700);
         presetBox.setBounds(36, 954, 184, 36);
         meter.setBounds(276, 956, 252, 32);
         alienBtn.setBounds(544, 946, 52, 52);
@@ -470,11 +459,27 @@ private:
     void setAdvanced(bool a)
     {
         advanced = a;
-        juce::Slider* simple[6] = { &sLow, &sHigh, &sDrive, &sWidth, &sGlue, &sCeil };
-        for (auto* s : simple) s->setVisible(!a);
-        for (auto& c : adv) { c->s.setVisible(a); c->name.setVisible(a); }
-        autoGain.setVisible(a);
+        updateVisibility();
         repaint();
+    }
+    void setEqOpen(bool open)
+    {
+        eqOpen = open;
+        eqPanel.setVisible(open);
+        updateVisibility();
+        repaint();
+    }
+    void updateVisibility()
+    {
+        const bool mainPage = !eqOpen;
+        sSpeed.setVisible(mainPage); sAmount.setVisible(mainPage);
+        optoOn.setVisible(mainPage); optoLimit.setVisible(mainPage); masterOn.setVisible(mainPage);
+        juce::Slider* knobsOpto[4] = { &kPeak, &kGain, &kLink, &kMix };
+        for (auto* k : knobsOpto) k->setVisible(mainPage);
+        juce::Slider* simple[6] = { &sLow, &sHigh, &sDrive, &sWidth, &sGlue, &sCeil };
+        for (auto* s : simple) s->setVisible(mainPage && !advanced);
+        for (auto& c : adv) { c->s.setVisible(mainPage && advanced); c->name.setVisible(mainPage && advanced); }
+        autoGain.setVisible(mainPage && advanced);
     }
     void timerCallback() override
     {
@@ -482,12 +487,14 @@ private:
         const float lv = juce::jlimit(0.f, 1.f, (db + 60.f) / 60.f);
         meterLevel = lv > meterLevel ? lv : juce::jmax(lv, meterLevel - 0.04f);
         meter.setLevel(meterLevel);
+        eqButton.repaint();
     }
 
     OneChainProcessor& proc;
     AlienLookAndFeel laf;
     juce::Image bodyTex;
     bool advanced = false;
+    bool eqOpen = false;
     float meterLevel = 0.f;
 
     juce::ToggleButton pitchOn, optoOn, optoLimit, masterOn, autoGain;
@@ -496,6 +503,8 @@ private:
     std::vector<std::unique_ptr<AdvCtl>> adv;
     MeterLeds meter;
     AlienButton alienBtn;
+    EqButton eqButton;
+    EqPanel eqPanel;
 
     // attachments last: destroyed first
     std::vector<std::unique_ptr<SA>> sAtt;
