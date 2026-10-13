@@ -10,16 +10,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Buscar el proyecto
+        id: find
+        shell: pwsh
+        run: |
+          $pp = Get-ChildItem -Recurse -Filter PluginProcessor.cpp | Where-Object { $_.Directory.Name -eq 'Source' } | Select-Object -First 1
+          if (-not $pp) {
+            Write-Host "Archivos del repositorio:"
+            Get-ChildItem -Recurse -Name | Select-Object -First 100
+            throw "No encuentro Source/PluginProcessor.cpp en el repositorio"
+          }
+          $proj = $pp.Directory.Parent.FullName
+          if (-not (Test-Path (Join-Path $proj 'CMakeLists.txt'))) {
+            Write-Host "Archivos del repositorio:"
+            Get-ChildItem -Recurse -Name | Select-Object -First 100
+            throw "Falta CMakeLists.txt junto a la carpeta Source ($proj)"
+          }
+          Write-Host "Proyecto encontrado en: $proj"
+          "dir=$proj" >> $env:GITHUB_OUTPUT
+
       - name: Configurar
-        run: cmake -B build -A x64
+        shell: pwsh
+        run: cmake -S "${{ steps.find.outputs.dir }}" -B build -A x64
 
       - name: Compilar y correr tests del DSP
         continue-on-error: true
+        shell: pwsh
         run: |
           cmake --build build --config Release --target dsp_test
           ./build/Release/dsp_test.exe
 
       - name: Compilar el VST3
+        shell: pwsh
         run: cmake --build build --config Release --target OneChain_VST3 --parallel
 
       - name: Subir el plugin como descarga
