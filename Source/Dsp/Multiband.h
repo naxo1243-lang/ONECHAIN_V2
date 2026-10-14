@@ -16,7 +16,7 @@ public:
     void prepare(float sampleRate) {
         sr = sampleRate;
         for (int i = 0; i < 3; ++i) comp[i].prepare(sr);
-        for (int c = 0; c < 2; ++c) for (int k = 0; k < 12; ++k) f[c][k].reset();
+        for (int c = 0; c < 2; ++c) for (int k = 0; k < 9; ++k) f[c][k].reset();
         lastX1 = lastX2 = -1.f;
     }
 
@@ -31,8 +31,8 @@ public:
                 const float rest = f[c][3].process(f[c][2].process(x));
                 const float mid  = f[c][5].process(f[c][4].process(rest));
                 const float high = f[c][7].process(f[c][6].process(rest));
-                // phase-align the low band with the second crossover (all-pass compensation)
-                const float lowAp = f[c][9].process(f[c][8].process(low)) + f[c][11].process(f[c][10].process(low));
+                // phase-align the low band with the second crossover: LR4 LP+HP is exactly a 2nd-order all-pass
+                const float lowAp = f[c][8].process(low);
                 band[0][c][i] = lowAp; band[1][c][i] = mid; band[2][c][i] = high;
             }
         }
@@ -49,9 +49,9 @@ public:
                 gr = comp[b].process(band[b][0].data(), band[b][1].data(), n, cp);
             } else comp[b].reset();
             if (bp.sat > 0.5f) {
-                const float g = dbToLin(bp.sat * 0.12f), tn = std::tanh(g);
+                const float g = dbToLin(bp.sat * 0.12f), tn = std::tanh(g), itn = 1.f / tn;
                 for (int c = 0; c < 2; ++c)
-                    for (int i = 0; i < n; ++i) band[b][c][i] = std::tanh(g * band[b][c][i]) / tn;
+                    for (int i = 0; i < n; ++i) band[b][c][i] = fastTanh(g * band[b][c][i]) * itn;
             }
             const float lv = dbToLin(bp.gainDb);
             for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) band[b][c][i] *= lv;
@@ -70,13 +70,12 @@ private:
             f[c][2].highpass(sr, x1); f[c][3].highpass(sr, x1);
             f[c][4].lowpass(sr, x2);  f[c][5].lowpass(sr, x2);
             f[c][6].highpass(sr, x2); f[c][7].highpass(sr, x2);
-            f[c][8].lowpass(sr, x2);  f[c][9].lowpass(sr, x2);
-            f[c][10].highpass(sr, x2); f[c][11].highpass(sr, x2);
+            f[c][8].allpass(sr, x2);
         }
         lastX1 = x1; lastX2 = x2;
     }
     float sr = 44100.f, lastX1 = -1.f, lastX2 = -1.f;
-    Biquad f[2][12];
+    Biquad f[2][9];
     Compressor comp[3];
     std::array<float, kChunk> band[3][2];
 };

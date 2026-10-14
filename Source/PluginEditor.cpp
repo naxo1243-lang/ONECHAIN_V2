@@ -268,6 +268,7 @@ public:
 
         // --- combos
         fillCombo(keyBox, "pitch_key"); fillCombo(scaleBox, "pitch_scale");
+        fillCombo(modeBox, "lat_mode");
         for (int i = 0; i < proc.getNumPrograms(); ++i) presetBox.addItem(proc.getProgramName(i), i + 1);
         presetBox.setSelectedItemIndex(proc.getCurrentProgram(), juce::dontSendNotification);
         presetBox.onChange = [this] { proc.setCurrentProgram(presetBox.getSelectedItemIndex()); };
@@ -333,6 +334,12 @@ public:
         drawName(g, "Pitch On", { 36, 20, 120, 40 });
         drawName(g, "Key",   { 486, 62, 114, 20 }, juce::Justification::centred, 15.f);
         drawName(g, "Scale", { 486, 126, 114, 20 }, juce::Justification::centred, 15.f);
+        {
+            const double sr = proc.getSampleRate() > 0.0 ? proc.getSampleRate() : 48000.0;
+            const juce::String t = "LATENCY " + juce::String((double)proc.getLatencySamples() / sr * 1000.0, 1) + " ms";
+            g.setFont(monoFont(12.f)); g.setColour(kLcdText.withAlpha(0.85f));
+            g.drawText(t, juce::Rectangle<int>(204, 46, 200, 16), juce::Justification::centred, false);
+        }
 
         // AUTO-TUNE badge
         {
@@ -408,6 +415,7 @@ public:
         autoGain.setBounds(31 + 94 * 4 + 29, 612 + 86 * 3 - 2, 36, 36);
 
         eqButton.setBounds(486, 16, 114, 40);
+        modeBox.setBounds(204, 12, 200, 34);
         eqPanel.setBounds(20, 236, 586, 700);
         presetBox.setBounds(36, 954, 184, 36);
         meter.setBounds(276, 956, 252, 32);
@@ -488,6 +496,8 @@ private:
         meterLevel = lv > meterLevel ? lv : juce::jmax(lv, meterLevel - 0.04f);
         meter.setLevel(meterLevel);
         eqButton.repaint();
+        const int lat = proc.getLatencySamples();
+        if (lat != lastLat) { lastLat = lat; repaint(204, 44, 200, 20); }
     }
 
     OneChainProcessor& proc;
@@ -498,7 +508,8 @@ private:
     float meterLevel = 0.f;
 
     juce::ToggleButton pitchOn, optoOn, optoLimit, masterOn, autoGain;
-    juce::ComboBox keyBox, scaleBox, presetBox;
+    juce::ComboBox keyBox, scaleBox, presetBox, modeBox;
+    int lastLat = -1;
     juce::Slider sSpeed, sAmount, kPeak, kGain, kLink, kMix, sLow, sHigh, sDrive, sWidth, sGlue, sCeil;
     std::vector<std::unique_ptr<AdvCtl>> adv;
     MeterLeds meter;

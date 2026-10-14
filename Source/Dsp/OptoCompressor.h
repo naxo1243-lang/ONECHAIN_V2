@@ -27,7 +27,7 @@ public:
 
         for (int i = 0; i < n; ++i) {
             const float dryL = l[i], dryR = r[i];
-            const float dl = linToDb(std::fabs(dryL)), dr = linToDb(std::fabs(dryR));
+            const float dl = linToDbFast(std::fabs(dryL)), dr = linToDbFast(std::fabs(dryR));
             const float dm = std::max(dl, dr);
             const float det[2] = { dl + link * (dm - dl), dr + link * (dm - dr) };
 
@@ -42,18 +42,19 @@ public:
                 if (target > gr[c]) {
                     gr[c] = aAtt * gr[c] + (1.f - aAtt) * target;
                 } else {
-                    const float relMs = 60.f + mem[c] * 1400.f;
-                    const float aRel = msToCoef(relMs, sr);
+                    // exp(-1/tau) ~ 1 - 1/tau for tau >= ~2800 samples (error < 1e-7): no exp() per sample
+                    const float tau = (60.f + mem[c] * 1400.f) * 0.001f * sr;
+                    const float aRel = 1.f - 1.f / tau;
                     gr[c] = aRel * gr[c] + (1.f - aRel) * target;
                 }
                 mem[c] = aMem * mem[c] + (1.f - aMem) * (gr[c] > 3.f ? 1.f : 0.f);
-                g[c] = dbToLin(-gr[c]) * makeup;
+                g[c] = dbToLinFast(-gr[c]) * makeup;
                 maxGr = std::max(maxGr, gr[c]);
             }
             float wl = dryL * g[0], wr = dryR * g[1];
             if (saturate) {
                 const float d = 1.2f;
-                wl = std::tanh(wl * d) / d; wr = std::tanh(wr * d) / d;
+                wl = fastTanh(wl * d) / d; wr = fastTanh(wr * d) / d;
             }
             l[i] = dryL * (1.f - mix) + wl * mix;
             r[i] = dryR * (1.f - mix) + wr * mix;

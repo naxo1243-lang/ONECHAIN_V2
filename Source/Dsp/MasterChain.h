@@ -38,11 +38,12 @@ public:
         widthS.prepare(sr, 15.f); widthS.setImmediate(1.f);
         glueMixS.prepare(sr, 15.f); glueMixS.setImmediate(0.f);
         driveMixS.prepare(sr, 15.f); driveMixS.setImmediate(1.f);
-        eIn = eOut = 0.f; agGain = 1.f;
+        eIn = eOut = 0.f; agGain = 1.f; agTarget = 1.f;
         cE = 1.f - std::exp(-1.f / (0.4f * sr));
         cG = 1.f - std::exp(-1.f / (0.1f * sr));
     }
     int latency() const { return lim.latency(); }
+    void setLookaheadMs(float ms) { lim.setLookaheadMs(ms); }
     const Meters& meters() const { return meters_; }
 
     void process(float* l, float* r, int n, const Params& p) {
@@ -66,12 +67,13 @@ private:
     }
 
     void chunk(float* l, float* r, int n, const Params& p) {
-        for (int i = 0; i < n; ++i)
-            meters_.inPeakDb = std::max(meters_.inPeakDb, linToDb(std::max(std::fabs(l[i]), std::fabs(r[i]))));
+        { float pk = 0.f; for (int i = 0; i < n; ++i) pk = std::max(pk, std::max(std::fabs(l[i]), std::fabs(r[i])));
+          meters_.inPeakDb = std::max(meters_.inPeakDb, linToDbFast(pk)); }
 
         if (p.enabled) {
             updateFilters(p);
             const bool cutOn = p.lowCut > 21.f, bmOn = p.bassMono > 20.f;
+            const bool lowOn = std::fabs(p.lowDb) > 0.01f, midOn = std::fabs(p.midDb) > 0.01f, highOn = std::fabs(p.highDb) > 0.01f;
             inG.set(dbToLin(p.inDb)); outG.set(dbToLin(p.outDb)); widthS.set(p.width);
             glueMixS.set(p.glueMix); driveMixS.set(p.driveMix);
 
@@ -80,14 +82,20 @@ private:
                 const float g = inG.next();
                 float a = l[i] * g, b = r[i] * g;
                 if (cutOn) { a = cut2[0].process(cut1[0].process(a)); b = cut2[1].process(cut1[1].process(b)); }
-                a = highS[0].process(midB[0].process(lowS[0].process(a)));
-                b = highS[1].process(midB[1].process(lowS[1].process(b)));
+                if (lowOn)  { a = lowS[0].process(a);  b = lowS[1].process(b); }
+                if (midOn)  { a = midB[0].process(a);  b = midB[1].process(b); }
+                if (highOn) { a = highS[0].process(a); b = highS[1].process(b); }
                 l[i] = a; r[i] = b; refL[i] = a; refR[i] = b;
             }
             // 2) multiband
             float gr3[3] = {0, 0, 0};
-            mb.process(l, r, n, p.mb, gr3);
-            for (int b = 0; b < 3; ++b) meters_.bandGr[b] = std::max(meters_.bandGr[b], gr3[b]);
+            bool mbActive = false;
+            for (int b = 0; b < 3; ++b)
+                if (p.mb.b[b].comp > 0.5f || p.mb.b[b].sat > 0.5f || std::fabs(p.mb.b[b].gainDb) > 0.01f) mbActive = true;
+            if (mbActive) {
+                mb.process(l, r, n, p.mb, gr3);
+                for (int b = 0; b < 3; ++b) meters_.bandGr[b] = std::max(meters_.bandGr[b], gr3[b]);
+            }
 
             // 3) glue compressor with parallel mix
             if (p.glueMix > 0.001f || glueMixS.v > 0.001f) {
@@ -106,11 +114,11 @@ private:
 
             // 4) drive (saturation) with parallel mix
             if (p.driveDb > 0.05f) {
-                const float g = dbToLin(p.driveDb), tn = std::tanh(g);
+                const float g = dbToLin(p.driveDb), itn = 1.f / std::tanh(g);
                 for (int i = 0; i < n; ++i) {
                     const float m = driveMixS.next();
-                    l[i] = l[i] * (1.f - m) + (std::tanh(g * l[i]) / tn) * m;
-                    r[i] = r[i] * (1.f - m) + (std::tanh(g * r[i]) / tn) * m;
+                    l[i] = l[i] * (1.f - m) + (fastTanh(g * l[i]) * itn) * m;
+                    r[i] = r[i] * (1.f - m) + (fastTanh(g * r[i]) * itn) * m;
                 }
             }
             // 5) auto-gain: keep the loudness of the processed section equal to its input
@@ -118,9 +126,8 @@ private:
                 for (int i = 0; i < n; ++i) {
                     eIn  += cE * (0.5f * (refL[i] * refL[i] + refR[i] * refR[i]) - eIn);
                     eOut += cE * (0.5f * (l[i] * l[i] + r[i] * r[i]) - eOut);
-                    float t = std::sqrt((eIn + 1e-10f) / (eOut + 1e-10f));
-                    t = std::min(std::max(t, 0.1f), 4.f);
-                    agGain += (t - agGain) * cG;
+                    if ((i & 15) == 0) agTarget = std::min(std::max(std::sqrt((eIn + 1e-10f) / (eOut + 1e-10f)), 0.1f), 4.f);
+                    agGain += (agTarget - agGain) * cG;
                     l[i] *= agGain; r[i] *= agGain;
                 }
             } else agGain = 1.f;
@@ -137,15 +144,15 @@ private:
         }
         // 8) true-peak limiter (always on)
         meters_.limGrDb = std::max(meters_.limGrDb, lim.process(l, r, n, p.ceilingDb));
-        for (int i = 0; i < n; ++i)
-            meters_.outPeakDb = std::max(meters_.outPeakDb, linToDb(std::max(std::fabs(l[i]), std::fabs(r[i]))));
+        { float pk = 0.f; for (int i = 0; i < n; ++i) pk = std::max(pk, std::max(std::fabs(l[i]), std::fabs(r[i])));
+          meters_.outPeakDb = std::max(meters_.outPeakDb, linToDbFast(pk)); }
     }
 
     float sr = 44100.f;
     float lastLowCut = 0, lastLow = 0, lastMidF = 0, lastMid = 0, lastHigh = 0, lastBm = 0;
     Biquad cut1[2], cut2[2], lowS[2], midB[2], highS[2], bmHP, bmHP2;
     Smoothed inG, outG, widthS, glueMixS, driveMixS;
-    float eIn = 0, eOut = 0, agGain = 1, cE = 0.001f, cG = 0.001f;
+    float eIn = 0, eOut = 0, agGain = 1, agTarget = 1, cE = 0.001f, cG = 0.001f;
     Multiband mb;
     Compressor glue;
     TruePeakLimiter lim;

@@ -20,6 +20,10 @@ APVTS::ParameterLayout OneChainProcessor::createLayout()
         p.push_back(std::make_unique<AudioParameterBool>(ParameterID{ id, 1 }, name, def));
     };
 
+    // ---------------- Latency mode ----------------
+    p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ "lat_mode", 1 }, "Latency Mode",
+        StringArray{ "Recording", "Original", "Mixing" }, 0));
+
     // ---------------- Pitch (original engine) ----------------
     addB("pitch_on", "Pitch On", true);
     p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ "pitch_key", 1 }, "Key",
@@ -150,13 +154,17 @@ bool OneChainProcessor::isBusesLayoutSupported(const BusesLayout& l) const
 
 void OneChainProcessor::prepareToPlay(double sr, int blockSize)
 {
-    pitch.prepare((float)sr);
-    opto.prepare((float)sr);
-    eq.prepare((float)sr);
-    master.prepare((float)sr);
+    engine.prepare((float)sr);
+    engine.setMode((int)(get("lat_mode") + 0.5f));
     dupR.assign((size_t)blockSize, 0.f);
-    // pitch window + linear-phase EQ + limiter look-ahead: constant, whichever sections are on or off
-    setLatencySamples(pitch.latency() + eq.latency() + master.latency());
+    reportedLatency.store(engine.latency());
+    setLatencySamples(engine.latency());   // constant for a given mode, whichever sections are on or off
+}
+
+void OneChainProcessor::handleAsyncUpdate()
+{
+    setLatencySamples(reportedLatency.load());
+    updateHostDisplay(ChangeDetails().withLatencyChanged(true));
 }
 
 void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -177,45 +185,40 @@ void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBu
         r = buf.getWritePointer(1);
     }
 
-    // ---- Pitch (always runs: keeps latency constant; on=false -> ratio 1) ----
-    oc::PitchParams pp;
-    pp.on = get("pitch_on") > 0.5f;
-    pp.key = (int)get("pitch_key");
-    pp.scale = (int)get("pitch_scale");
-    pp.speedMs = get("pitch_speed");
-    pp.amount = get("pitch_amount");
-    pitch.process(l, r, n, pp);
+    oc::EngineParams ep;
+    ep.mode = (int)(get("lat_mode") + 0.5f);
+
+    // ---- Pitch ----
+    ep.pitch.on = get("pitch_on") > 0.5f;
+    ep.pitch.key = (int)get("pitch_key");
+    ep.pitch.scale = (int)get("pitch_scale");
+    ep.pitch.speedMs = get("pitch_speed");
+    ep.pitch.amount = get("pitch_amount");
 
     // ---- Opto ----
-    if (get("opto_on") > 0.5f)
-        opto.process(l, r, n, get("opto_peak"), get("opto_gain"), get("opto_limit") > 0.5f,
-                     get("opto_link") / 100.f, get("opto_mix") / 100.f);
+    ep.opto.on = get("opto_on") > 0.5f;
+    ep.opto.peak = get("opto_peak");
+    ep.opto.gainDb = get("opto_gain");
+    ep.opto.limit = get("opto_limit") > 0.5f;
+    ep.opto.link = get("opto_link") / 100.f;
+    ep.opto.mix = get("opto_mix") / 100.f;
 
-    // ---- Linear-phase EQ (always runs: constant latency; flat = pure delay) ----
-    {
-        oc::EqParams ep;
-        ep.on = eqOnPtr->load() > 0.5f;
-        ep.gainDb = eqGainPtr->load();
-        for (int b = 0; b < oc::kEqBands; ++b) {
-            oc::EqBand& bd = ep.band[b];
-            bd.on = eqPtr[b].on->load() > 0.5f;
-            bd.shape = (int)(eqPtr[b].shape->load() + 0.5f);
-            bd.freq = eqPtr[b].freq->load();
-            bd.gainDb = eqPtr[b].gain->load();
-            bd.q = eqPtr[b].q->load();
-            bd.slope = (int)(eqPtr[b].slope->load() + 0.5f);
-            bd.place = (int)(eqPtr[b].place->load() + 0.5f);
-        }
-        eq.process(l, r, n, ep);
-
-        // feed the analyzer with the post-EQ signal
-        int ap = anaPos.load();
-        for (int i = 0; i < n; ++i) anaBuf[(size_t)((ap + i) & (kAnaSize - 1))] = 0.5f * (l[i] + r[i]);
-        anaPos.store((ap + n) & (kAnaSize - 1));
+    // ---- EQ ----
+    ep.eq.on = eqOnPtr->load() > 0.5f;
+    ep.eq.gainDb = eqGainPtr->load();
+    for (int b = 0; b < oc::kEqBands; ++b) {
+        oc::EqBand& bd = ep.eq.band[b];
+        bd.on = eqPtr[b].on->load() > 0.5f;
+        bd.shape = (int)(eqPtr[b].shape->load() + 0.5f);
+        bd.freq = eqPtr[b].freq->load();
+        bd.gainDb = eqPtr[b].gain->load();
+        bd.q = eqPtr[b].q->load();
+        bd.slope = (int)(eqPtr[b].slope->load() + 0.5f);
+        bd.place = (int)(eqPtr[b].place->load() + 0.5f);
     }
 
     // ---- Master ----
-    oc::MasterChain::Params mp;
+    oc::MasterChain::Params& mp = ep.master;
     mp.enabled = get("mast_on") > 0.5f;
     mp.inDb = get("mast_in");
     mp.lowCut = get("mast_lowcut");
@@ -240,9 +243,24 @@ void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBu
     mp.bassMono = get("mast_bassmono");
     mp.outDb = get("mast_out");
     mp.ceilingDb = get("mast_ceiling");
-    master.process(l, r, n, mp);
 
-    const float outDb = master.meters().outPeakDb;
+    // Pitch -> Opto -> EQ
+    if (engine.processFront(l, r, n, ep)) {            // latency mode changed
+        reportedLatency.store(engine.latency());
+        triggerAsyncUpdate();
+    }
+
+    // feed the analyzer with the post-EQ signal
+    {
+        int ap = anaPos.load();
+        for (int i = 0; i < n; ++i) anaBuf[(size_t)((ap + i) & (kAnaSize - 1))] = 0.5f * (l[i] + r[i]);
+        anaPos.store((ap + n) & (kAnaSize - 1));
+    }
+
+    // Master
+    engine.processBack(l, r, n, ep);
+
+    const float outDb = engine.meters().outPeakDb;
     if (outDb > meterOut.load()) meterOut.store(outDb);
 
     if (mono) for (int i = 0; i < n; ++i) l[i] = 0.5f * (l[i] + r[i]);
@@ -261,8 +279,11 @@ void OneChainProcessor::setCurrentProgram(int index)
     const auto& P = oc::presets();
     if (index < 0 || index >= (int)P.size()) return;
     currentProgram = index;
-    for (auto* prm : getParameters())
+    for (auto* prm : getParameters()) {
+        if (auto* pid = dynamic_cast<juce::AudioProcessorParameterWithID*>(prm))
+            if (pid->paramID == "lat_mode") continue;       // loading a preset never changes the latency mode
         prm->setValueNotifyingHost(prm->getDefaultValue());
+    }
     for (const auto& kv : P[(size_t)index].values)
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(apvts.getParameter(kv.first)))
             rp->setValueNotifyingHost(rp->convertTo0to1(kv.second));

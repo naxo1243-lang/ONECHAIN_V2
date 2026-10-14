@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include "../Source/Dsp/LinearPhaseEq.h"
+#include "../Source/Dsp/ZeroLatencyEq.h"
 
 namespace eqt {
 using namespace oc;
@@ -13,7 +14,7 @@ inline void check(const char* name, bool ok, const char* fmt, double a = 0, doub
     std::printf("[%s] ", name); std::printf(fmt, a, b); std::printf("  %s\n", ok ? "OK" : "FAIL"); fails += !ok;
 }
 // run an input through the EQ in irregular host-sized chunks
-inline void run(LinearPhaseEq& eq, std::vector<float>& l, std::vector<float>& r, const EqParams& p) {
+template <class E> inline void run(E& eq, std::vector<float>& l, std::vector<float>& r, const EqParams& p) {
     int N = (int)l.size(), i = 0, k = 0; const int sizes[5] = { 64, 100, 256, 37, 512 };
     while (i < N) { int m = std::min(sizes[k++ % 5], N - i); eq.process(&l[(size_t)i], &r[(size_t)i], m, p); i += m; }
 }
@@ -22,8 +23,8 @@ inline float tailDb(const std::vector<float>& x, int tail) {
     return 20.f * std::log10((float)std::sqrt(s / tail) + 1e-12f);
 }
 // gain of a sine through the EQ (dB), measured after settling
-inline float gainAt(float sr, float f, const EqParams& p, int chan = 0, float rightScale = 1.f, float rightPhase = 0.f) {
-    LinearPhaseEq eq; eq.prepare(sr);
+template <class E = LinearPhaseEq> inline float gainAt(float sr, float f, const EqParams& p, int chan = 0, float rightScale = 1.f, float rightPhase = 0.f) {
+    E eq; eq.prepare(sr);
     int N = (int)(1.2f * sr);
     std::vector<float> l((size_t)N), r((size_t)N), ref((size_t)N);
     for (int i = 0; i < N; ++i) {
@@ -35,6 +36,60 @@ inline float gainAt(float sr, float f, const EqParams& p, int chan = 0, float ri
     const std::vector<float>& o = (chan == 0) ? l : r;
     const float in = (chan == 0) ? tailDb(ref, 9600) : tailDb(ref, 9600) + 20.f * std::log10(std::max(rightScale, 1e-6f));
     return tailDb(o, 9600) - in;
+}
+
+inline int runZeroLatency() {
+    const float sr = 48000.f; using Z = ZeroLatencyEq;
+    EqParams bell; bell.band[0].on = true; bell.band[0].shape = EqBell; bell.band[0].freq = 1000.f; bell.band[0].gainDb = 6.f; bell.band[0].q = 1.f;
+    { // 1) flat = bit-exact passthrough, zero delay
+        Z eq; eq.prepare(sr); int N = 4096; std::vector<float> l((size_t)N), r((size_t)N);
+        for (int i = 0; i < N; ++i) { l[(size_t)i] = std::sin(0.01f * (float)i); r[(size_t)i] = std::cos(0.013f * (float)i); }
+        auto l0 = l, r0 = r; EqParams p; run(eq, l, r, p);
+        double err = 0; for (int i = 0; i < N; ++i) err = std::max(err, (double)std::fabs(l[(size_t)i] - l0[(size_t)i]) + std::fabs(r[(size_t)i] - r0[(size_t)i]));
+        check("zl-eq", err == 0.0, "no bands = untouched signal, zero latency (max error %.1f)", err);
+    }
+    { // 2) gains
+        float g1k = gainAt<Z>(sr, 1000.f, bell), g100 = gainAt<Z>(sr, 100.f, bell), g10k = gainAt<Z>(sr, 10000.f, bell);
+        check("zl-eq", std::fabs(g1k - 6.f) < 0.3f, "bell +6 dB @1k: %+.2f dB", g1k);
+        check("zl-eq", std::fabs(g100) < 0.5f && std::fabs(g10k) < 0.5f, "far from the band: 100 Hz %+.2f, 10 kHz %+.2f dB", g100, g10k);
+    }
+    { // 3) same magnitude as the linear-phase engine
+        EqParams p = bell; p.band[1].on = true; p.band[1].shape = EqLowShelf; p.band[1].freq = 200.f; p.band[1].gainDb = -4.f; p.band[1].q = 0.7f;
+        p.band[2].on = true; p.band[2].shape = EqHighCut; p.band[2].freq = 9000.f; p.band[2].slope = 3;
+        double worst = 0;
+        for (float f : { 80.f, 200.f, 700.f, 1000.f, 1500.f, 4000.f, 8000.f, 9000.f, 12000.f })
+            worst = std::max(worst, (double)std::fabs(gainAt<Z>(sr, f, p) - gainAt<LinearPhaseEq>(sr, f, p)));
+        check("zl-eq", worst < 0.35, "magnitude matches the linear-phase EQ, worst difference %.3f dB", worst);
+    }
+    { // 4) steep cut, notch, shelf
+        EqParams p; p.band[0].on = true; p.band[0].shape = EqLowCut; p.band[0].freq = 1000.f; p.band[0].slope = 5; p.band[0].q = 0.7071f;
+        float g250 = gainAt<Z>(sr, 250.f, p), g4k = gainAt<Z>(sr, 4000.f, p);
+        check("zl-eq", g250 < -40.f && std::fabs(g4k) < 0.3f, "low cut 1k/48dB: 250 Hz %.1f dB, 4 kHz %+.2f dB", g250, g4k);
+        EqParams n; n.band[0].on = true; n.band[0].shape = EqNotch; n.band[0].freq = 2000.f; n.band[0].q = 4.f;
+        float g = gainAt<Z>(sr, 2000.f, n); check("zl-eq", g < -25.f, "notch 2k: %.1f dB", g);
+    }
+    { // 5) placement
+        EqParams p = bell; p.band[0].place = EqSide;
+        float mid = gainAt<Z>(sr, 1000.f, p, 0, 1.f, 0.f), side = gainAt<Z>(sr, 1000.f, p, 0, 1.f, 3.14159265f);
+        check("zl-eq", std::fabs(mid) < 0.3f && std::fabs(side - 6.f) < 0.4f, "Side band: mid %+.2f dB, side %+.2f dB", mid, side);
+        EqParams q = bell; q.band[0].place = EqLeft;
+        float gl = gainAt<Z>(sr, 1000.f, q, 0), gr = gainAt<Z>(sr, 1000.f, q, 1);
+        check("zl-eq", std::fabs(gl - 6.f) < 0.4f && std::fabs(gr) < 0.3f, "Left band: L %+.2f dB, R %+.2f dB", gl, gr);
+    }
+    { // 6) abrupt parameter jumps while playing: no clicks
+        Z eq; eq.prepare(sr); int N = (int)(1.5f * sr); std::vector<float> out((size_t)N);
+        EqParams p; float maxStep = 0; int i = 0;
+        while (i < N) {
+            int m = std::min(64, N - i); std::vector<float> a((size_t)m), b((size_t)m);
+            for (int k = 0; k < m; ++k) a[(size_t)k] = b[(size_t)k] = 0.3f * std::sin(2.f * kPi * 1000.f * (float)(i + k) / sr);
+            p.band[0].on = true; p.band[0].freq = 1000.f; p.band[0].q = 1.f; p.band[0].gainDb = (i > (int)sr / 2) ? 12.f : 0.f;
+            if (i > (int)sr) p.band[0].freq = 1500.f;
+            eq.process(a.data(), b.data(), m, p); std::copy(a.begin(), a.end(), out.begin() + i); i += m;
+        }
+        for (int k = 2; k < N; ++k) maxStep = std::max(maxStep, std::fabs(out[(size_t)k] - out[(size_t)k - 1]));
+        check("zl-eq", maxStep < 0.30f, "+12 dB and freq jumps while playing: max sample jump %.3f", maxStep);
+    }
+    return 0;
 }
 
 inline int runAll() {
@@ -109,6 +164,7 @@ inline int runAll() {
         check("eq", std::fabs(g - 6.f) < 0.5f, "96 kHz bell +6 @1k: %+.2f dB (latency %.0f samples)", g, (double)e96.latency());
         std::printf("          44.1 kHz latency %d samples (%.1f ms)\n", e44.latency(), 1000.f * e44.latency() / 44100.f);
     }
+    runZeroLatency();
     return fails;
 }
 } // namespace eqt
