@@ -1,4 +1,4 @@
-# OneChain v2.1
+# OneChain v3 (optimizado para grabar)
 
 Un solo VST3 con cuatro secciones en serie: **Pitch -> Opto -> EQ lineal -> Master**, con interfaz alien (626x1024, redimensionable).
 
@@ -20,9 +20,28 @@ Un solo VST3 con cuatro secciones en serie: **Pitch -> Opto -> EQ lineal -> Mast
 - Fila de 8 fichas para elegir banda; debajo: Shape, Slope (solo cortes), Placement y los knobs Freq / Gain / Q.
 - Analizador de espectro (post-EQ) con boton Spectrum; el boton de dB cambia el rango de la grafica.
 
-## Latencia (constante, con las secciones encendidas o apagadas)
-Pitch 12.5 ms + EQ lineal 48 ms + limitador 1.7 ms = ~62 ms a 48 kHz. El plugin la informa al host
-(la compensacion automatica de retardo del host la alinea). La fase lineal exige esa latencia.
+## Modos de latencia (selector arriba, junto al boton EQ)
+| Modo | Pitch (ventana) | EQ | Limitador | Latencia total @48k |
+|---|---|---|---|---|
+| **Recording** (por defecto) | 10 ms | cero latencia (IIR) | 0.5 ms | **5.7 ms** |
+| Original (como la v1) | 25 ms | cero latencia (IIR) | 1.5 ms | 14.2 ms |
+| Mixing | 25 ms | fase lineal | 1.5 ms | 62.2 ms |
+
+La v1 tenia 14 ms. El selector informa el cambio de latencia al host. Cargar un preset no cambia el modo.
+El EQ de cero latencia y el de fase lineal tienen la misma magnitud (diferencia < 0.01 dB).
+
+## CPU (cadena completa con los valores por defecto, un nucleo, referencia en un PC de pruebas)
+| | v2.1 | v3 Recording | v3 Original | v3 Mixing |
+|---|---|---|---|---|
+| CPU | ~12 % | **~1.7 %** | ~1.7 % | ~3.7 % |
+
+Que se optimizo (sin quitar funciones ni cambiar el sonido):
+- Detector de tono YIN sobre senal decimada (~12 kHz) + afinado a frecuencia completa: 10.7x menos CPU, misma precision.
+- Desplazador de pitch estereo con calculos compartidos; si Pitch esta apagado no analiza.
+- log / exp / tanh rapidos en los bucles por muestra; coeficiente de release sin exp().
+- Limitador con minimo movil O(1); interpola picos solo cuando la senal esta cerca del techo.
+- Crossover multibanda con un solo all-pass; etapas neutras se saltan; medidores una vez por bloque.
+- EQ de cero latencia: solo las bandas activas cuestan CPU.
 
 ## Probar el DSP sin JUCE
     g++ -std=c++17 -O2 Tests/dsp_test.cpp -o dsp_test && ./dsp_test

@@ -159,6 +159,18 @@ public:
 
     int latency() const { return N / 2 + B; }
 
+    // clear the signal history (the current filter is kept)
+    void reset()
+    {
+        for (int c = 0; c < 2; ++c) {
+            std::fill(fdl[c].begin(), fdl[c].end(), cpx(0.f, 0.f));
+            std::fill(hist[c].begin(), hist[c].end(), 0.f);
+            std::fill(inBuf[c].begin(), inBuf[c].end(), 0.f);
+            std::fill(outBuf[c].begin(), outBuf[c].end(), 0.f);
+        }
+        pos = 0; fdlPos = 0; xfade = false;
+    }
+
     void process(float* l, float* r, int n, const EqParams& p)
     {
         pending = p;

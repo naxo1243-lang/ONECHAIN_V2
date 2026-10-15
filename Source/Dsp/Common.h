@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
+#include <cstring>
 
 namespace oc {
 
@@ -12,6 +13,38 @@ inline float dbToLin(float d) { return std::pow(10.f, d / 20.f); }
 inline float linToDb(float x) { return 20.f * std::log10(std::max(x, 1e-9f)); }
 // one-pole coefficient for a time constant in milliseconds
 inline float msToCoef(float ms, float sr) { return std::exp(-1.f / (0.001f * std::max(ms, 0.01f) * sr)); }
+
+
+// ---------------------------------------------------------------------------
+// Fast approximations for the per-sample hot loops (error far below audibility)
+// ---------------------------------------------------------------------------
+inline float fastLog2(float x)
+{
+    uint32_t xi; std::memcpy(&xi, &x, 4);
+    const uint32_t mi = (xi & 0x007FFFFFu) | 0x3F000000u;
+    float m; std::memcpy(&m, &mi, 4);
+    return (float)xi * 1.1920928955078125e-7f - 124.22551499f - 1.498030302f * m - 1.72587999f / (0.3520887068f + m);
+}
+inline float fastExp2(float p)
+{
+    const float clipp = p < -126.f ? -126.f : p;
+    const float offset = clipp < 0.f ? 1.f : 0.f;
+    const int w = (int)clipp;
+    const float z = clipp - (float)w + offset;
+    const uint32_t vi = (uint32_t)((float)(1 << 23) * (clipp + 121.2740575f + 27.7280233f / (4.84252568f - z) - 1.49012907f * z));
+    float v; std::memcpy(&v, &vi, 4);
+    return v;
+}
+inline float linToDbFast(float x) { return 6.0205999f * fastLog2(x < 1e-9f ? 1e-9f : x); }
+inline float dbToLinFast(float d) { return fastExp2(d * 0.16609640474f); }
+// rational tanh: exact at 0, +-1 at |x| >= 3, continuous
+inline float fastTanh(float x)
+{
+    if (x > 3.f) return 1.f;
+    if (x < -3.f) return -1.f;
+    const float x2 = x * x;
+    return x * (27.f + x2) / (27.f + 9.f * x2);
+}
 
 // RBJ cookbook biquad (transposed direct form II)
 struct Biquad {
@@ -54,6 +87,11 @@ struct Biquad {
         f = clampF(f, sr);
         float w = 2 * kPi * f / sr, cs = std::cos(w), al = std::sin(w) / (2 * Q);
         set((1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al);
+    }
+    void allpass(float sr, float f, float Q = 0.70710678f) {
+        f = clampF(f, sr);
+        float w = 2 * kPi * f / sr, cs = std::cos(w), al = std::sin(w) / (2 * Q);
+        set(1 - al, -2 * cs, 1 + al, 1 + al, -2 * cs, 1 - al);
     }
     float process(float x) {
         float y = b0 * x + z1;

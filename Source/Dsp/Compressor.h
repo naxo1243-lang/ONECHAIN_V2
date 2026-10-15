@@ -19,14 +19,14 @@ public:
         float maxGr = 0.f;
         for (int i = 0; i < n; ++i) {
             const float lvl = std::max(std::fabs(l[i]), std::fabs(r[i]));
-            const float over = linToDb(lvl) - p.thrDb;
+            const float over = linToDbFast(lvl) - p.thrDb;
             float target;
             if (over <= -knee * 0.5f)      target = 0.f;
             else if (over >= knee * 0.5f)  target = over * slope;
             else { const float x = over + knee * 0.5f; target = slope * x * x / (2.f * knee); }
             if (target > gr) gr = aA * gr + (1.f - aA) * target;
             else             gr = aR * gr + (1.f - aR) * target;
-            const float g = dbToLin(-gr);
+            const float g = dbToLinFast(-gr);
             l[i] *= g; r[i] *= g;
             maxGr = std::max(maxGr, gr);
         }

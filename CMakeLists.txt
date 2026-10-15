@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(OneChain VERSION 0.2.0)
+project(OneChain VERSION 0.3.0)
 set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
@@ -22,7 +22,13 @@ target_compile_definitions(OneChain PUBLIC
 target_link_libraries(OneChain PRIVATE
     juce::juce_audio_utils
     juce::juce_recommended_config_flags
+    juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags)
+
+# faster floating point on MSVC (the DSP does not rely on strict IEEE corner cases)
+if(MSVC)
+    target_compile_options(OneChain PRIVATE /fp:fast)
+endif()
 
 # DSP unit tests (no JUCE needed):  cmake --build . --target dsp_test
 add_executable(dsp_test Tests/dsp_test.cpp)

@@ -2,15 +2,12 @@
 #include <atomic>
 #include <array>
 #include <juce_audio_processors/juce_audio_processors.h>
-#include "Dsp/PitchCorrector.h"
-#include "Dsp/OptoCompressor.h"
-#include "Dsp/MasterChain.h"
-#include "Dsp/LinearPhaseEq.h"
+#include "Dsp/Engine.h"
 
-class OneChainProcessor : public juce::AudioProcessor {
+class OneChainProcessor : public juce::AudioProcessor, private juce::AsyncUpdater {
 public:
     OneChainProcessor();
-    ~OneChainProcessor() override = default;
+    ~OneChainProcessor() override { cancelPendingUpdate(); }
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -51,10 +48,10 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     float get(const char* id) const { return apvts.getRawParameterValue(id)->load(); }
 
-    oc::PitchCorrector pitch;
-    oc::OptoCompressor opto;
-    oc::LinearPhaseEq  eq;
-    oc::MasterChain    master;
+    void handleAsyncUpdate() override;   // reports a new latency to the host (message thread)
+
+    oc::Engine engine;
+    std::atomic<int> reportedLatency { 0 };
     std::vector<float> dupR;   // for mono-in/mono-out
     int currentProgram = 0;
 

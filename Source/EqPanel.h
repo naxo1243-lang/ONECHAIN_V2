@@ -66,6 +66,7 @@ public:
         eqOnRaw = ap.getRawParameterValue("eq_on");
         eqGainRaw = ap.getRawParameterValue("eq_gain");
         anaRaw = ap.getRawParameterValue("eq_analyzer");
+        modeRaw = ap.getRawParameterValue("lat_mode");
         for (int b = 0; b < oc::kEqBands; ++b) {
             const juce::String n = juce::String("eq") + juce::String(b + 1) + "_";
             bp[b].on = ap.getParameter(n + "on");       raw[b].on = ap.getRawParameterValue(n + "on");
@@ -112,7 +113,7 @@ public:
     {
         skin::drawPanel(g, getLocalBounds().toFloat().reduced(2.f), {});
         skin::drawName(g, "On", { 52, 8, 40, 34 }, juce::Justification::centredLeft, 16.f);
-        skin::drawName(g, "LINEAR-PHASE EQ", { 96, 8, 230, 34 }, juce::Justification::centred, 17.f);
+        skin::drawName(g, modeRaw->load() > 1.5f ? "LINEAR-PHASE EQ" : "ZERO-LATENCY EQ", { 96, 8, 230, 34 }, juce::Justification::centred, 17.f);
         skin::drawName(g, "Spectrum", { 326, 8, 94, 34 }, juce::Justification::centredRight, 15.f);
 
         skin::drawName(g, "Shape", { 12, 488, 176, 22 }, juce::Justification::centredLeft, 14.f);
@@ -472,6 +473,8 @@ private:
                 s = db > s ? db : s * 0.82f + db * 0.18f;
             }
         }
+        const int md = (int)(modeRaw->load() + 0.5f);
+        if (md != lastMode) { lastMode = md; repaint(96, 8, 230, 34); }
         display.repaint();
         chips.repaint();
     }
@@ -480,7 +483,8 @@ private:
     static constexpr int kFft = 4096;
 
     OneChainProcessor& proc;
-    std::atomic<float> *eqOnRaw = nullptr, *eqGainRaw = nullptr, *anaRaw = nullptr;
+    std::atomic<float> *eqOnRaw = nullptr, *eqGainRaw = nullptr, *anaRaw = nullptr, *modeRaw = nullptr;
+    int lastMode = -1;
     BandPtr bp[oc::kEqBands];
     BandRaw raw[oc::kEqBands];
 
