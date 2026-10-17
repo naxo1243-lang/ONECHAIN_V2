@@ -24,6 +24,7 @@ public:
         wp = 0; p = 0.f;
     }
     int latency() const { return W / 2; }
+    void reset() { std::fill(bufL.begin(), bufL.end(), 0.f); std::fill(bufR.begin(), bufR.end(), 0.f); wp = 0; p = 0.f; }
 
     void process(float xl, float xr, float ratio, float& yl, float& yr) {
         bufL[(size_t)wp] = xl; bufR[(size_t)wp] = xr;
@@ -88,6 +89,11 @@ public:
         shifter.prepare(sr, 25.f);
     }
     void setWindowMs(float ms) { shifter.setWindowMs(ms); }
+    void reset() {
+        std::fill(hist.begin(), hist.end(), 0.f); std::fill(histD.begin(), histD.end(), 0.f);
+        lp1.reset(); lp2.reset(); hw = 0; hwD = 0; cnt = 0; decCnt = 0;
+        ratio = targetRatio = 1.f; lastF0 = 0.f; shifter.reset();
+    }
     int latency() const { return shifter.latency(); }
     float getDetectedHz() const { return lastF0; }
 

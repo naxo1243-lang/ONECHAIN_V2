@@ -5,6 +5,7 @@
 #include "../Source/Dsp/PitchCorrector.h"
 #include "eq_tests.h"
 #include "engine_tests.h"
+#include "pitch_algo_tests.h"
 using namespace oc;
 
 static const float sr = 48000.f;
@@ -127,6 +128,8 @@ int main() {
     std::printf("\n--- linear-phase EQ ---\n");
     fails += eqt::runAll();
     fails += engt::runAll();
+    std::printf("\n--- pitch algorithms ---");
+    fails += pat::runAll();
     std::printf(fails ? "\n%d test(s) FAILED\n" : "\nAll DSP tests passed\n", fails);
     return fails;
 }

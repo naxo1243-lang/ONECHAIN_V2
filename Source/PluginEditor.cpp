@@ -54,7 +54,7 @@ float vnoise(float x, float y)
     const float a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
     return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
 }
-juce::Image makeSlimeTexture(int w, int h)
+std::vector<float> makeHeightField(int w, int h)
 {
     std::vector<float> H((size_t)w * (size_t)h);
     for (int y = 0; y < h; ++y)
@@ -63,6 +63,13 @@ juce::Image makeSlimeTexture(int w, int h)
             H[(size_t)y * (size_t)w + (size_t)x] = 0.50f * vnoise(fx / 70.f, fy / 70.f) + 0.28f * vnoise(fx / 28.f, fy / 28.f)
                                                  + 0.14f * vnoise(fx / 11.f, fy / 11.f) + 0.08f * vnoise(fx / 4.f, fy / 4.f);
         }
+    return H;
+}
+// shades the height field; the green base colour is rotated in hue (degrees) and scaled in brightness
+juce::Image renderSlime(const std::vector<float>& H, int w, int h, float rotDeg, float gain)
+{
+    const float ang = rotDeg * 0.0174532925f, ca = std::cos(ang), sa = std::sin(ang), k = 0.57735027f;
+    const float m00 = ca + (1.f - ca) / 3.f, m01 = (1.f - ca) / 3.f - k * sa, m02 = (1.f - ca) / 3.f + k * sa;
     juce::Image img(juce::Image::RGB, w, h, false);
     juce::Image::BitmapData bd(img, juce::Image::BitmapData::writeOnly);
     auto at = [&](int x, int y) { x = juce::jlimit(0, w - 1, x); y = juce::jlimit(0, h - 1, y); return H[(size_t)y * (size_t)w + (size_t)x]; };
@@ -75,10 +82,13 @@ juce::Image makeSlimeTexture(int w, int h)
             const float ex = std::fabs((float)x - (float)w * 0.5f) / ((float)w * 0.5f);
             const float ey = std::fabs((float)y - (float)h * 0.5f) / ((float)h * 0.5f);
             const float vig = 1.f - 0.20f * (ex * ex + ey * ey) * 0.5f;
-            const float r = (0.09f + 0.16f * t) * shade * vig + spec;
-            const float gg = (0.36f + 0.29f * t) * shade * vig + spec;
-            const float b = (0.27f + 0.21f * t) * shade * vig + spec;
-            bd.setPixelColour(x, y, juce::Colour::fromFloatRGBA(juce::jlimit(0.f, 1.f, r), juce::jlimit(0.f, 1.f, gg), juce::jlimit(0.f, 1.f, b), 1.f));
+            const float r0 = juce::jlimit(0.f, 1.f, (0.09f + 0.16f * t) * shade * vig + spec);
+            const float g0 = juce::jlimit(0.f, 1.f, (0.36f + 0.29f * t) * shade * vig + spec);
+            const float b0 = juce::jlimit(0.f, 1.f, (0.27f + 0.21f * t) * shade * vig + spec);
+            const float r = juce::jlimit(0.f, 1.f, (m00 * r0 + m01 * g0 + m02 * b0) * gain);
+            const float g = juce::jlimit(0.f, 1.f, (m02 * r0 + m00 * g0 + m01 * b0) * gain);
+            const float b = juce::jlimit(0.f, 1.f, (m01 * r0 + m02 * g0 + m00 * b0) * gain);
+            bd.setPixelColour(x, y, juce::Colour::fromFloatRGBA(r, g, b, 1.f));
         }
     return img;
 }
@@ -86,7 +96,9 @@ juce::Image makeSlimeTexture(int w, int h)
 // ---------------------------------------------------------------- look and feel
 class AlienLookAndFeel : public juce::LookAndFeel_V4 {
 public:
-    AlienLookAndFeel()
+    AlienLookAndFeel() { refreshColours(); }
+
+    void refreshColours()
     {
         setColour(juce::PopupMenu::backgroundColourId, kLcdBg);
         setColour(juce::PopupMenu::textColourId, kLcdText);
@@ -94,6 +106,10 @@ public:
         setColour(juce::PopupMenu::highlightedTextColourId, kWhite);
         setColour(juce::ComboBox::textColourId, kLcdText);
         setColour(juce::ComboBox::outlineColourId, kLcdEdge);
+        setColour(juce::Slider::textBoxTextColourId, kLcdText);
+        setColour(juce::Slider::textBoxBackgroundColourId, kLcdBg);
+        setColour(juce::Slider::textBoxOutlineColourId, kLcdEdge);
+        setColour(juce::Slider::textBoxHighlightColourId, kLcdEdge);
         setColour(juce::TooltipWindow::backgroundColourId, kLcdBg);
         setColour(juce::TooltipWindow::textColourId, kLcdText);
     }
@@ -117,9 +133,9 @@ public:
         g.setColour(kNeon); g.strokePath(val, stroke);
 
         const float r2 = radius - 9.f;
-        g.setColour(juce::Colour(0xff021008)); g.fillEllipse(c.x - r2 - 2.f, c.y - r2 - 1.f, 2.f * r2 + 4.f, 2.f * r2 + 4.f);
-        juce::ColourGradient grad(juce::Colour(0xff8fe8b4), c.x - r2 * 0.45f, c.y - r2 * 0.55f,
-                                  juce::Colour(0xff0f4a30), c.x + r2 * 0.65f, c.y + r2 * 0.85f, true);
+        g.setColour(kDomeBlack); g.fillEllipse(c.x - r2 - 2.f, c.y - r2 - 1.f, 2.f * r2 + 4.f, 2.f * r2 + 4.f);
+        juce::ColourGradient grad(kDomeHi, c.x - r2 * 0.45f, c.y - r2 * 0.55f,
+                                  kDomeLo, c.x + r2 * 0.65f, c.y + r2 * 0.85f, true);
         g.setGradientFill(grad); g.fillEllipse(c.x - r2, c.y - r2, 2.f * r2, 2.f * r2);
         g.setColour(juce::Colour(0x55ffffff)); g.fillEllipse(c.x - r2 * 0.55f, c.y - r2 * 0.80f, r2 * 0.7f, r2 * 0.35f);
 
@@ -149,8 +165,8 @@ public:
         const float tw = 36.f, th = 30.f;
         auto thumb = juce::Rectangle<float>(pos - tw * 0.5f, cy - th * 0.5f, tw, th);
         g.setColour(juce::Colour(0x88000000)); g.fillRoundedRectangle(thumb.translated(0.f, 2.5f), 11.f);
-        juce::ColourGradient grad(juce::Colour(0xff9be8bb), thumb.getX(), thumb.getY(),
-                                  juce::Colour(0xff22674a), thumb.getX(), thumb.getBottom(), false);
+        juce::ColourGradient grad(kThumbHi, thumb.getX(), thumb.getY(),
+                                  kThumbLo, thumb.getX(), thumb.getBottom(), false);
         g.setGradientFill(grad); g.fillRoundedRectangle(thumb, 11.f);
         g.setColour(kRim); g.drawRoundedRectangle(thumb, 11.f, 2.f);
         g.setColour(juce::Colour(0x66000000));
@@ -164,7 +180,7 @@ public:
         const float dia = std::min(r.getWidth(), r.getHeight());
         const auto c = r.getCentre();
         g.setColour(kRim); g.fillEllipse(c.x - dia * 0.5f, c.y - dia * 0.5f, dia, dia);
-        juce::ColourGradient rim(juce::Colour(0xff8fe8b4), c.x, c.y - dia * 0.5f, juce::Colour(0xff0f4a30), c.x, c.y + dia * 0.5f, false);
+        juce::ColourGradient rim(kDomeHi, c.x, c.y - dia * 0.5f, kDomeLo, c.x, c.y + dia * 0.5f, false);
         g.setGradientFill(rim); g.fillEllipse(c.x - dia * 0.5f + 2.f, c.y - dia * 0.5f + 2.f, dia - 4.f, dia - 4.f);
         const float ri = dia * 0.5f - 6.f;
         g.setColour(kDark); g.fillEllipse(c.x - ri - 1.f, c.y - ri - 1.f, 2.f * ri + 2.f, 2.f * ri + 2.f);
@@ -173,7 +189,7 @@ public:
             g.setColour(kNeon); g.fillEllipse(c.x - ri, c.y - ri, 2.f * ri, 2.f * ri);
             g.setColour(juce::Colour(0xaaffffff)); g.fillEllipse(c.x - ri * 0.55f, c.y - ri * 0.75f, ri * 0.7f, ri * 0.45f);
         } else {
-            g.setColour(juce::Colour(0xff0b2a1c)); g.fillEllipse(c.x - ri, c.y - ri, 2.f * ri, 2.f * ri);
+            g.setColour(kOffLed); g.fillEllipse(c.x - ri, c.y - ri, 2.f * ri, 2.f * ri);
         }
     }
 
@@ -212,7 +228,7 @@ struct MeterLeds : juce::Component {
         for (int i = 0; i < segs; ++i) {
             const float f = ((float)i + 0.5f) / (float)segs;
             const bool lit = f <= level;
-            juce::Colour on = f < 0.72f ? kNeon : (f < 0.9f ? juce::Colour(0xffe8ff5a) : juce::Colour(0xffff5a4a));
+            juce::Colour on = f < 0.72f ? juce::Colour(0xff5dff8f) : (f < 0.9f ? juce::Colour(0xffe8ff5a) : juce::Colour(0xffff5a4a));
             g.setColour(lit ? on : kLcdDim);
             g.fillRoundedRectangle(in.getX() + (float)i * w + 1.f, in.getY(), w - 2.f, in.getHeight(), 1.5f);
         }
@@ -253,6 +269,28 @@ struct EqButton : juce::Button {
     }
 };
 
+struct BadgeButton : juce::Button {
+    int algo = 0;
+    BadgeButton() : juce::Button("algo") {}
+    void paintButton(juce::Graphics& g, bool over, bool down) override
+    {
+        const float w = (float)getWidth();
+        juce::Path tri; tri.startNewSubPath(w * 0.5f, 4.f); tri.lineTo(w - 4.f, 106.f); tri.lineTo(4.f, 106.f); tri.closeSubPath();
+        tri = tri.createPathWithRoundedCorners(16.f);
+        g.setColour(kBadgeFill); g.fillPath(tri);
+        g.setColour(kNeon.withAlpha((over || down) ? 1.f : 0.8f)); g.strokePath(tri, juce::PathStrokeType(down ? 3.2f : 2.f));
+        drawAlienFace(g, juce::Rectangle<float>(w * 0.5f - 28.f, 30.f, 56.f, 52.f));
+        g.setFont(monoFont(11.f)); g.setColour(kLcdText);
+        g.drawText("AUTO-TUNE", juce::Rectangle<float>(0.f, 82.f, w, 18.f), juce::Justification::centred, false);
+        static const char* const names[3] = { "ORIGINAL", "PRECISE", "WAVES" };
+        auto pill = juce::Rectangle<float>(w * 0.5f - 48.f, 110.f, 96.f, 22.f);
+        g.setColour(kLcdBg); g.fillRoundedRectangle(pill, 10.f);
+        g.setColour(kNeon); g.drawRoundedRectangle(pill, 10.f, 1.8f);
+        g.setFont(monoFont(13.f)); g.setColour(kNeon);
+        g.drawText(names[algo < 0 ? 0 : (algo > 2 ? 2 : algo)], pill, juce::Justification::centred, false);
+    }
+};
+
 // ---------------------------------------------------------------- the UI
 class OneChainUI : public juce::Component, private juce::Timer {
 public:
@@ -260,7 +298,7 @@ public:
     {
         setLookAndFeel(&laf);
         setSize(626, 1024);
-        bodyTex = makeSlimeTexture(626, 1024);
+        heightField = makeHeightField(626, 1024);
 
         // --- toggles (LEDs)
         led(pitchOn, "pitch_on"); led(optoOn, "opto_on"); led(optoLimit, "opto_limit");
@@ -269,6 +307,7 @@ public:
         // --- combos
         fillCombo(keyBox, "pitch_key"); fillCombo(scaleBox, "pitch_scale");
         fillCombo(modeBox, "lat_mode");
+        fillCombo(rangeBox, "pitch_range");
         for (int i = 0; i < proc.getNumPrograms(); ++i) presetBox.addItem(proc.getProgramName(i), i + 1);
         presetBox.setSelectedItemIndex(proc.getCurrentProgram(), juce::dontSendNotification);
         presetBox.onChange = [this] { proc.setCurrentProgram(presetBox.getSelectedItemIndex()); };
@@ -276,6 +315,7 @@ public:
 
         // --- sliders
         linear(sSpeed, "pitch_speed"); linear(sAmount, "pitch_amount");
+        knob(kWvSpeed, "pitch_speed"); knob(kWvTrans, "wv_trans"); knob(kWvTol, "wv_tol"); knob(kWvVib, "wv_vib"); knob(kWvAmt, "pitch_amount");
         knob(kPeak, "opto_peak"); knob(kGain, "opto_gain"); knob(kLink, "opto_link"); knob(kMix, "opto_mix");
         linear(sLow, "mast_low"); linear(sHigh, "mast_high"); linear(sDrive, "mast_drive");
         linear(sWidth, "mast_width"); linear(sGlue, "mast_glue"); linear(sCeil, "mast_ceiling");
@@ -309,6 +349,10 @@ public:
         eqButton.onClick = [this] { setEqOpen(eqButton.getToggleState()); };
         addChildComponent(eqPanel);
         eqPanel.onClose = [this] { eqButton.setToggleState(false, juce::dontSendNotification); setEqOpen(false); };
+        addAndMakeVisible(badge);
+        badge.onClick = [this] { cycleAlgo(); };
+        algoRaw = proc.apvts.getRawParameterValue("pitch_algo");
+        applyAlgo((int)(algoRaw->load() + 0.5f), true);
         setAdvanced(false);
         startTimerHz(30);
     }
@@ -328,7 +372,7 @@ public:
         g.saveState(); g.reduceClipRegion(body); g.drawImageAt(bodyTex, 0, 0); g.restoreState();
         g.setColour(kRim); g.strokePath(body, juce::PathStrokeType(6.f));
         juce::Path hl; hl.addRoundedRectangle(12.f, 12.f, 602.f, 1000.f, 46.f);
-        g.setColour(juce::Colour(0x66c8ffe0)); g.strokePath(hl, juce::PathStrokeType(1.6f));
+        g.setColour(kHiLine); g.strokePath(hl, juce::PathStrokeType(1.6f));
 
         // --- header
         drawName(g, "Pitch On", { 36, 20, 120, 40 });
@@ -341,16 +385,6 @@ public:
             g.drawText(t, juce::Rectangle<int>(204, 46, 200, 16), juce::Justification::centred, false);
         }
 
-        // AUTO-TUNE badge
-        {
-            juce::Path tri; tri.startNewSubPath(90.f, 74.f); tri.lineTo(150.f, 176.f); tri.lineTo(30.f, 176.f); tri.closeSubPath();
-            tri = tri.createPathWithRoundedCorners(16.f);
-            g.setColour(juce::Colour(0xff062014)); g.fillPath(tri);
-            g.setColour(kNeon.withAlpha(0.8f)); g.strokePath(tri, juce::PathStrokeType(2.f));
-            drawAlienFace(g, juce::Rectangle<float>(62.f, 100.f, 56.f, 52.f));
-            g.setFont(monoFont(11.f)); g.setColour(kLcdText);
-            g.drawText("AUTO-TUNE", juce::Rectangle<float>(30.f, 152.f, 120.f, 18.f), juce::Justification::centred, false);
-        }
         // title LCD
         drawLcdBox(g, { 176.f, 62.f, 296.f, 48.f });
         g.setFont(monoFont(26.f));
@@ -362,9 +396,18 @@ public:
 
         if (!eqOpen) {
         // --- pitch panel
-        drawPanel(g, { 20.f, 238.f, 586.f, 142.f }, "PITCH");
-        drawName(g, "Retune Speed", { 38, 272, 150, 40 });
-        drawName(g, "Pitch Amount", { 38, 322, 150, 40 });
+        {
+            static const char* const pt[3] = { "PITCH  -  ORIGINAL", "PITCH  -  PRECISE", "PITCH  -  WAVES" };
+            drawPanel(g, { 20.f, 238.f, 586.f, 142.f }, pt[algo < 0 ? 0 : (algo > 2 ? 2 : algo)]);
+        }
+        if (algo == 2) {
+            static const char* const wn[5] = { "Speed", "Note Trans.", "Tolerance", "Vibrato", "Amount" };
+            for (int i = 0; i < 5; ++i) drawName(g, wn[i], { 20 + 117 * i, 266, 117, 18 }, juce::Justification::centred, 13.f);
+        } else {
+            drawName(g, "Retune Speed", { 38, 272, 150, 40 });
+            drawName(g, "Pitch Amount", { 38, 322, 150, 40 });
+        }
+        if (algo != 0) drawName(g, "Range", { 400, 240, 62, 26 }, juce::Justification::centredRight, 14.f);
 
         // --- opto panel
         drawPanel(g, { 20.f, 390.f, 586.f, 170.f }, "OPTO COMP");
@@ -416,6 +459,10 @@ public:
 
         eqButton.setBounds(486, 16, 114, 40);
         modeBox.setBounds(204, 12, 200, 34);
+        badge.setBounds(30, 70, 120, 136);
+        rangeBox.setBounds(468, 240, 122, 26);
+        juce::Slider* wk[5] = { &kWvSpeed, &kWvTrans, &kWvTol, &kWvVib, &kWvAmt };
+        for (int i = 0; i < 5; ++i) wk[i]->setBounds(20 + 117 * i + 10, 284, 97, 94);
         eqPanel.setBounds(20, 236, 586, 700);
         presetBox.setBounds(36, 954, 184, 36);
         meter.setBounds(276, 956, 252, 32);
@@ -430,10 +477,6 @@ private:
 
     void style(juce::Slider& s)
     {
-        s.setColour(juce::Slider::textBoxTextColourId, kLcdText);
-        s.setColour(juce::Slider::textBoxBackgroundColourId, kLcdBg);
-        s.setColour(juce::Slider::textBoxOutlineColourId, kLcdEdge);
-        s.setColour(juce::Slider::textBoxHighlightColourId, kLcdEdge);
         s.setScrollWheelEnabled(false);
         addAndMakeVisible(s);
     }
@@ -477,10 +520,35 @@ private:
         updateVisibility();
         repaint();
     }
+    void cycleAlgo()
+    {
+        auto* prm = proc.apvts.getParameter("pitch_algo");
+        const int next = (algo + 1) % 3;
+        prm->beginChangeGesture(); prm->setValueNotifyingHost(prm->convertTo0to1((float)next)); prm->endChangeGesture();
+        applyAlgo(next);
+    }
+    // recolours the whole skin for the algorithm: green = Original, blue = Precise, red = Waves
+    void applyAlgo(int a, bool force = false)
+    {
+        a = juce::jlimit(0, 2, a);
+        if (a == algo && !force) return;
+        algo = a;
+        skin::setTheme(a);
+        static const float rot[3] = { 0.f, 57.f, -158.f }, gain[3] = { 1.f, 1.25f, 1.5f };
+        bodyTex = renderSlime(heightField, 626, 1024, rot[a], gain[a]);
+        laf.refreshColours();
+        sendLookAndFeelChange();
+        badge.algo = a;
+        updateVisibility();
+        repaint();
+    }
     void updateVisibility()
     {
         const bool mainPage = !eqOpen;
-        sSpeed.setVisible(mainPage); sAmount.setVisible(mainPage);
+        sSpeed.setVisible(mainPage && algo != 2); sAmount.setVisible(mainPage && algo != 2);
+        juce::Slider* wk[5] = { &kWvSpeed, &kWvTrans, &kWvTol, &kWvVib, &kWvAmt };
+        for (auto* k : wk) k->setVisible(mainPage && algo == 2);
+        rangeBox.setVisible(mainPage && algo != 0);
         optoOn.setVisible(mainPage); optoLimit.setVisible(mainPage); masterOn.setVisible(mainPage);
         juce::Slider* knobsOpto[4] = { &kPeak, &kGain, &kLink, &kMix };
         for (auto* k : knobsOpto) k->setVisible(mainPage);
@@ -491,6 +559,7 @@ private:
     }
     void timerCallback() override
     {
+        if (algoRaw != nullptr) { const int a = (int)(algoRaw->load() + 0.5f); if (a != algo) applyAlgo(a); }
         const float db = proc.meterOut.exchange(-100.f);
         const float lv = juce::jlimit(0.f, 1.f, (db + 60.f) / 60.f);
         meterLevel = lv > meterLevel ? lv : juce::jmax(lv, meterLevel - 0.04f);
@@ -503,17 +572,22 @@ private:
     OneChainProcessor& proc;
     AlienLookAndFeel laf;
     juce::Image bodyTex;
+    std::vector<float> heightField;
+    int algo = -1;
+    std::atomic<float>* algoRaw = nullptr;
     bool advanced = false;
     bool eqOpen = false;
     float meterLevel = 0.f;
 
     juce::ToggleButton pitchOn, optoOn, optoLimit, masterOn, autoGain;
-    juce::ComboBox keyBox, scaleBox, presetBox, modeBox;
+    juce::ComboBox keyBox, scaleBox, presetBox, modeBox, rangeBox;
     int lastLat = -1;
+    juce::Slider kWvSpeed, kWvTrans, kWvTol, kWvVib, kWvAmt;
     juce::Slider sSpeed, sAmount, kPeak, kGain, kLink, kMix, sLow, sHigh, sDrive, sWidth, sGlue, sCeil;
     std::vector<std::unique_ptr<AdvCtl>> adv;
     MeterLeds meter;
     AlienButton alienBtn;
+    BadgeButton badge;
     EqButton eqButton;
     EqPanel eqPanel;
 

@@ -1,4 +1,4 @@
-# OneChain v3 (optimizado para grabar)
+# OneChain v4 (3 algoritmos de autotune)
 
 Un solo VST3 con cuatro secciones en serie: **Pitch -> Opto -> EQ lineal -> Master**, con interfaz alien (626x1024, redimensionable).
 
@@ -20,6 +20,22 @@ Un solo VST3 con cuatro secciones en serie: **Pitch -> Opto -> EQ lineal -> Mast
 - Fila de 8 fichas para elegir banda; debajo: Shape, Slope (solo cortes), Placement y los knobs Freq / Gain / Q.
 - Analizador de espectro (post-EQ) con boton Spectrum; el boton de dB cambia el rango de la grafica.
 
+## Algoritmos de autotune (clic en el logo AUTO-TUNE, arriba a la izquierda)
+Cada clic cambia de algoritmo y recolorea toda la interfaz.
+
+| Algoritmo | Color | Que hace | Latencia del pitch @48k |
+|---|---|---|---|
+| **Original** | verde | Nuestro motor (desplazador de doble cabezal, el caracter de la v1) | 5 ms (Recording) / 12.5 ms (Original, Mixing) |
+| **Precise** | azul | PSOLA: cae exactamente en la nota (error < 0.1 cents) y conserva los formantes | 15 ms (Range High) / 23 ms (Medium) / 29 ms (Low) |
+| **Waves** | rojo | Estilo Waves Tune Real-Time: Speed, Note Transition, Tolerance, Vibrato | 2.5 ms (High) / 3.5 ms (Medium) / 5 ms (Low) |
+
+- **Range** (Low / Medium / High, aparece en Precise y Waves): rango de voz. Un rango mas agudo = menos latencia.
+  Low = voces desde 70-80 Hz, Medium = desde 100 Hz, High = desde 150 Hz.
+- **Waves** reemplaza los dos sliders por 5 knobs: Speed (rapidez dentro de una nota), Note Trans. (rapidez al llegar a una nota nueva),
+  Tolerance (desvio en cents que se deja sin corregir), Vibrato (cuanto del vibrato natural se conserva; 0 % lo plancha) y Amount.
+- El algoritmo, el Range y el modo de latencia se guardan con el proyecto y NO cambian al cargar un preset.
+- Solo el algoritmo activo consume CPU.
+
 ## Modos de latencia (selector arriba, junto al boton EQ)
 | Modo | Pitch (ventana) | EQ | Limitador | Latencia total @48k |
 |---|---|---|---|---|
@@ -29,6 +45,9 @@ Un solo VST3 con cuatro secciones en serie: **Pitch -> Opto -> EQ lineal -> Mast
 
 La v1 tenia 14 ms. El selector informa el cambio de latencia al host. Cargar un preset no cambia el modo.
 El EQ de cero latencia y el de fase lineal tienen la misma magnitud (diferencia < 0.01 dB).
+
+## CPU por algoritmo (cadena completa, Recording, bloques de 64, un nucleo)
+Original ~1.1 %, Precise ~1.9 %, Waves ~1.2 %.
 
 ## CPU (cadena completa con los valores por defecto, un nucleo, referencia en un PC de pruebas)
 | | v2.1 | v3 Recording | v3 Original | v3 Mixing |
