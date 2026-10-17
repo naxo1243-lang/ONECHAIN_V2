@@ -30,6 +30,13 @@ APVTS::ParameterLayout OneChainProcessor::createLayout()
         StringArray{ "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" }, 0));
     p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ "pitch_scale", 1 }, "Scale",
         StringArray{ "Chromatic","Major","Minor" }, 0));
+    p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ "pitch_algo", 1 }, "Tuning Algorithm",
+        StringArray{ "Original", "Precise", "Waves" }, 0));
+    p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{ "pitch_range", 1 }, "Voice Range",
+        StringArray{ "Low", "Medium", "High" }, 1));
+    addF("wv_trans", "Note Transition", 1.f, 500.f, 80.f, 0, " ms");
+    addF("wv_tol", "Tolerance", 0.f, 100.f, 10.f, 0, " c");
+    addF("wv_vib", "Vibrato", 0.f, 100.f, 100.f, 0, "%");
     addF("pitch_speed", "Retune Speed", 1.f, 200.f, 20.f, 1, " ms");
     {
         auto attr = AudioParameterFloatAttributes()
@@ -156,6 +163,7 @@ void OneChainProcessor::prepareToPlay(double sr, int blockSize)
 {
     engine.prepare((float)sr);
     engine.setMode((int)(get("lat_mode") + 0.5f));
+    engine.setPitch((int)(get("pitch_algo") + 0.5f), (int)(get("pitch_range") + 0.5f));
     dupR.assign((size_t)blockSize, 0.f);
     reportedLatency.store(engine.latency());
     setLatencySamples(engine.latency());   // constant for a given mode, whichever sections are on or off
@@ -194,6 +202,11 @@ void OneChainProcessor::processBlock(juce::AudioBuffer<float>& buf, juce::MidiBu
     ep.pitch.scale = (int)get("pitch_scale");
     ep.pitch.speedMs = get("pitch_speed");
     ep.pitch.amount = get("pitch_amount");
+    ep.algo = (int)(get("pitch_algo") + 0.5f);
+    ep.range = (int)(get("pitch_range") + 0.5f);
+    ep.waves.transMs = get("wv_trans");
+    ep.waves.tolCents = get("wv_tol");
+    ep.waves.vibrato = get("wv_vib") / 100.f;
 
     // ---- Opto ----
     ep.opto.on = get("opto_on") > 0.5f;
@@ -281,7 +294,8 @@ void OneChainProcessor::setCurrentProgram(int index)
     currentProgram = index;
     for (auto* prm : getParameters()) {
         if (auto* pid = dynamic_cast<juce::AudioProcessorParameterWithID*>(prm))
-            if (pid->paramID == "lat_mode") continue;       // loading a preset never changes the latency mode
+            if (pid->paramID == "lat_mode" || pid->paramID == "pitch_algo" || pid->paramID == "pitch_range")
+                continue;                                    // a preset never changes latency mode / algorithm / range
         prm->setValueNotifyingHost(prm->getDefaultValue());
     }
     for (const auto& kv : P[(size_t)index].values)

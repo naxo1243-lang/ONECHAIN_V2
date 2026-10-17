@@ -338,7 +338,7 @@ private:
             selPath.lineTo(r.getRight(), dbToY(0.f)); selPath.closeSubPath();
             g.setColour(bandColour(sel).withAlpha(0.20f)); g.fillPath(selPath);
         }
-        const juce::Colour curveCol = ep.on ? kNeon : juce::Colour(0xff6a8a78);
+        const juce::Colour curveCol = ep.on ? kNeon : kDimCurve;
         g.setColour(curveCol.withAlpha(0.30f)); g.strokePath(total, juce::PathStrokeType(6.f));
         g.setColour(curveCol);                  g.strokePath(total, juce::PathStrokeType(2.4f));
 
